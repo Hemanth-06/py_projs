@@ -54,3 +54,6 @@ node_modules/
 
 # Visual Studio files
 shared/
+
+# Local output file
+sample_out/
