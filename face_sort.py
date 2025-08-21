@@ -2,6 +2,7 @@ import warnings
 warnings.filterwarnings("ignore")
 import os
 import shutil
+import re
 from pathlib import Path
 from PIL import Image, ImageFile, UnidentifiedImageError
 import face_recognition
@@ -59,6 +60,13 @@ def convert_to_8bit(src_path, dst_path):
         print(f"   ⚠️ Error converting {src_path.name}: {str(e)}")
         return None
 
+def sort_person_labels(labels):
+    """Stable numeric sort: person_1, person_2, person_10... then any non-matching labels."""
+    def key(label):
+        m = re.fullmatch(r"person_(\d+)", label)
+        return (0, int(m.group(1))) if m else (1, label.lower())
+    return sorted(labels, key=key)
+
 def load_image_safe(path):
     """Load image with multiple fallback methods and validation"""
     try:
@@ -89,6 +97,8 @@ def main():
     print("🟢 Step 1: Preparing folders...")
     converted_folder.mkdir(exist_ok=True)
     output_folder.mkdir(exist_ok=True)
+    (output_folder / "others").mkdir(exist_ok=True)
+    (output_folder / "group_pics").mkdir(exist_ok=True)
 
     print("🟢 Step 2: Converting images to 8-bit...")
     converted_files = []
@@ -96,12 +106,9 @@ def main():
         if fname.lower().endswith((".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp")):
             src = input_images_folder / fname
             dst = converted_folder / Path(fname).stem
-            
-            # Skip already converted files to avoid reprocessing
             if (converted_folder / f"{dst.stem}.jpg").exists():
                 print(f"   ✓ Already converted: {fname}")
                 continue
-                
             new_path = convert_to_8bit(src, dst)
             if new_path:
                 converted_files.append(new_path)
@@ -112,28 +119,28 @@ def main():
     print("🟢 Step 3: Running face recognition on converted images...")
     known_face_encodings = []
     known_face_names = []
-    face_id = 0
+    face_id = 1  # start from person_1
+    group_id = 1
 
     for img_path in converted_folder.glob("*.jpg"):
         try:
             print(f"   🔍 Processing {img_path.name}...")
-            
+
             # Load image
             image = load_image_safe(img_path)
-            
-            # Detect faces
             face_locations = face_recognition.face_locations(image)
-            if not face_locations:
-                print(f"   ⚠️ No faces found in {img_path.name}")
-                continue
-                
-            # Get encodings
             encodings = face_recognition.face_encodings(image, face_locations)
-            
+
+            # CASE 0: No faces
+            if not encodings:
+                shutil.copy(img_path, output_folder / "others" / img_path.name)
+                print(f"   ⚠️ No faces found → copied to others/")
+                continue
+
+            # Match each face
+            face_labels = []
             for encoding in encodings:
                 matches = face_recognition.compare_faces(known_face_encodings, encoding, tolerance)
-                name = None
-                
                 if True in matches:
                     first_match_index = matches.index(True)
                     name = known_face_names[first_match_index]
@@ -142,13 +149,38 @@ def main():
                     known_face_encodings.append(encoding)
                     known_face_names.append(name)
                     face_id += 1
+                face_labels.append(name)
 
-                # Copy image to person's folder
-                person_folder = output_folder / name
+            # Use the number of UNIQUE people in the image
+            unique_persons = sort_person_labels(list(set(face_labels)))
+            num_people = len(unique_persons)
+
+            # CASE 0: safety (shouldn't happen here, encodings already checked)
+            if num_people == 0:
+                shutil.copy(img_path, output_folder / "others" / img_path.name)
+                print(f"   ⚠️ No faces found → copied to others/")
+                continue
+
+            # CASE 1: Single person → copy to that person's folder
+            if num_people == 1:
+                person_folder = output_folder / unique_persons[0]
                 person_folder.mkdir(exist_ok=True)
                 shutil.copy(img_path, person_folder / img_path.name)
-                print(f"   ✅ {img_path.name} → {name}")
-                
+                print(f"   ✅ {img_path.name} → {unique_persons[0]}")
+
+            # CASE 2–3: Group folder with stable name and correct count
+            elif 2 <= num_people <= 3:
+                group_name = f"group_{num_people}_" + "_".join(unique_persons)
+                group_folder = output_folder / group_name
+                group_folder.mkdir(exist_ok=True)
+                shutil.copy(img_path, group_folder / img_path.name)
+                print(f"   👥 {img_path.name} → {group_folder.name}")
+
+            # CASE >3: Too many faces → group_pics
+            else:
+                shutil.copy(img_path, output_folder / "group_pics" / img_path.name)
+                print(f"   ⚠️ {img_path.name} → more than 3 faces → group_pics")
+
         except Exception as e:
             print(f"   ⚠️ Error processing {img_path.name}: {str(e)}")
             continue
