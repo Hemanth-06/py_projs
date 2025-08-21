@@ -1,5 +1,6 @@
 import warnings
 warnings.filterwarnings("ignore")
+
 import os
 import shutil
 import re
@@ -102,6 +103,8 @@ def main():
     output_folder.mkdir(exist_ok=True)
     (output_folder / "others").mkdir(exist_ok=True)
     (output_folder / "group_pics").mkdir(exist_ok=True)
+    previews_folder = output_folder / "previews"
+    previews_folder.mkdir(exist_ok=True)
 
     print("🟢 Step 2: Converting images to 8-bit...")
     converted_files = []
@@ -123,7 +126,6 @@ def main():
     known_face_encodings = []
     known_face_names = []
     face_id = 1  # start from person_1
-    group_id = 1
 
     for img_path in converted_folder.glob("*.jpg"):
         try:
@@ -146,11 +148,11 @@ def main():
                 shutil.copy(img_path, output_folder / "others" / img_path.name)
                 print(f"   ⚠️ {img_path.name} → only tiny/background faces")
                 continue
-            encodings = face_recognition.face_encodings(image, valid_locations)
 
-            # Match each face
+            encodings = face_recognition.face_encodings(image, valid_locations)
             face_labels = []
-            for encoding in encodings:
+
+            for i, encoding in enumerate(encodings):
                 matches = face_recognition.compare_faces(known_face_encodings, encoding, tolerance)
                 if True in matches:
                     first_match_index = matches.index(True)
@@ -160,33 +162,28 @@ def main():
                     known_face_encodings.append(encoding)
                     known_face_names.append(name)
                     face_id += 1
+
                 face_labels.append(name)
-                # Save the first face image for preview
-                top, right, bottom, left = valid_locations[0]
-                face_crop = image[top:bottom, left:right]
-                preview_folder = output_folder / "previews"
-                preview_folder.mkdir(exist_ok=True)
-                cv2.imwrite(str(preview_folder / f"{name}.jpg"), cv2.cvtColor(face_crop, cv2.COLOR_RGB2BGR))
 
+                # Save the correct face image for preview
+                # Use the corresponding location for this encoding
+                top, right, bottom, left = valid_locations[i]
+                if not (previews_folder / f"{name}.jpg").exists():
+                    face_crop = image[top:bottom, left:right]
+                    cv2.imwrite(str(previews_folder / f"{name}.jpg"), cv2.cvtColor(face_crop, cv2.COLOR_RGB2BGR))
 
-            # Use the number of UNIQUE people in the image
+            # Determine unique persons
             unique_persons = sort_person_labels(list(set(face_labels)))
             num_people = len(unique_persons)
 
-            # CASE 0: safety (shouldn't happen here, encodings already checked)
-            if num_people == 0:
-                shutil.copy(img_path, output_folder / "others" / img_path.name)
-                print(f"   ⚠️ No faces found → copied to others/")
-                continue
-
-            # CASE 1: Single person → copy to that person's folder
+            # CASE 1: Single person → copy to person's folder
             if num_people == 1:
                 person_folder = output_folder / unique_persons[0]
                 person_folder.mkdir(exist_ok=True)
                 shutil.copy(img_path, person_folder / img_path.name)
                 print(f"   ✅ {img_path.name} → {unique_persons[0]}")
 
-            # CASE 2–3: Group folder with stable name and correct count
+            # CASE 2–3: Group folder
             elif 2 <= num_people <= 3:
                 group_name = f"group_{num_people}_" + "_".join(unique_persons)
                 group_folder = output_folder / group_name
@@ -206,6 +203,11 @@ def main():
     duration = time.time() - start_time
     print(f"🟢 Step 4: Completed in {duration:.2f} seconds! All faces sorted into:")
     print(f"   📂 {output_folder}")
+
+    # Show sample face previews for each recognized person
+    print("\n🟢 Sample faces for recognized persons saved in previews folder:")
+    for sample_img in sorted(previews_folder.glob("*.jpg")):
+        print(f"   - {sample_img.name}")
 
 if __name__ == "__main__":
     main()
