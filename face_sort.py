@@ -8,12 +8,14 @@ from PIL import Image, ImageFile, UnidentifiedImageError
 import face_recognition
 import cv2
 import numpy as np
+import time
 
 # ---------------- CONFIG ----------------
 input_images_folder = Path(r"D:\FSAPP\sample_out\images\other_images")
 converted_folder = input_images_folder.parent / "converted"
 output_folder = input_images_folder.parent / "sorted_faces"
 tolerance = 0.5
+min_face_size = 100
 # -----------------------------------------
 
 # Enable loading truncated images
@@ -94,6 +96,7 @@ def load_image_safe(path):
             raise ValueError(f"PIL error: {str(pil_error)} | OpenCV error: {str(cv_error)}")
 
 def main():
+    start_time = time.time()
     print("🟢 Step 1: Preparing folders...")
     converted_folder.mkdir(exist_ok=True)
     output_folder.mkdir(exist_ok=True)
@@ -128,14 +131,22 @@ def main():
 
             # Load image
             image = load_image_safe(img_path)
-            face_locations = face_recognition.face_locations(image)
-            encodings = face_recognition.face_encodings(image, face_locations)
+            # face_locations = face_recognition.face_locations(image)
+            face_locations = face_recognition.face_locations(image, model="hog")
+                
+            valid_locations = []
+            for (top, right, bottom, left) in face_locations:
+                w, h = right - left, bottom - top
+                aspect = w / float(h)
+                # Accept only large, roughly square faces
+                if w >= min_face_size and h >= min_face_size and 0.75 <= aspect <= 1.3:
+                    valid_locations.append((top, right, bottom, left))
 
-            # CASE 0: No faces
-            if not encodings:
+            if not valid_locations:
                 shutil.copy(img_path, output_folder / "others" / img_path.name)
-                print(f"   ⚠️ No faces found → copied to others/")
+                print(f"   ⚠️ {img_path.name} → only tiny/background faces")
                 continue
+            encodings = face_recognition.face_encodings(image, valid_locations)
 
             # Match each face
             face_labels = []
@@ -150,6 +161,13 @@ def main():
                     known_face_names.append(name)
                     face_id += 1
                 face_labels.append(name)
+                # Save the first face image for preview
+                top, right, bottom, left = valid_locations[0]
+                face_crop = image[top:bottom, left:right]
+                preview_folder = output_folder / "previews"
+                preview_folder.mkdir(exist_ok=True)
+                cv2.imwrite(str(preview_folder / f"{name}.jpg"), cv2.cvtColor(face_crop, cv2.COLOR_RGB2BGR))
+
 
             # Use the number of UNIQUE people in the image
             unique_persons = sort_person_labels(list(set(face_labels)))
@@ -185,7 +203,8 @@ def main():
             print(f"   ⚠️ Error processing {img_path.name}: {str(e)}")
             continue
 
-    print("🟢 Step 4: Completed! All faces sorted into:")
+    duration = time.time() - start_time
+    print(f"🟢 Step 4: Completed in {duration:.2f} seconds! All faces sorted into:")
     print(f"   📂 {output_folder}")
 
 if __name__ == "__main__":
